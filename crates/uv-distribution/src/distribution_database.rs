@@ -1363,13 +1363,14 @@ fn is_binary_payload(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
         return false;
     };
-    let file_name = file_name.to_ascii_lowercase();
+    let is_binary_extension = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("so")
+            || extension.eq_ignore_ascii_case("pyd")
+            || extension.eq_ignore_ascii_case("dll")
+            || extension.eq_ignore_ascii_case("dylib")
+    });
 
-    file_name.ends_with(".so")
-        || file_name.contains(".so.")
-        || file_name.ends_with(".pyd")
-        || file_name.ends_with(".dll")
-        || file_name.ends_with(".dylib")
+    is_binary_extension || file_name.to_ascii_lowercase().contains(".so.")
 }
 
 fn persist_archive_file(src: &Path, dst: &Path, executable: bool) -> io::Result<()> {
