@@ -6629,7 +6629,6 @@ dependencies = [
  "mailparse",
  "owo-colors",
  "pathdiff",
- "reflink-copy",
  "regex",
  "rustc-hash",
  "same-file",

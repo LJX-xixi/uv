@@ -11,7 +11,7 @@ use tracing::{debug, instrument};
 
 use uv_distribution_filename::WheelFilename;
 use uv_fs::Simplified;
-use uv_fs::link::{CopyLocks, LinkOptions, OnExistingDirectory, link_dir};
+use uv_fs::link::{CopyLocks, LinkOptions, OnExistingDirectory, link_dir, link_file};
 use uv_preview::{Preview, PreviewFeature};
 use uv_warnings::warn_user;
 
@@ -283,6 +283,7 @@ pub(crate) fn link_wheel_files(
             archive_file_manifest,
             // In the absence of an explicit link mode, keep shared archive-file objects linked.
             link_mode.unwrap_or(LinkMode::Hardlink),
+            state.copy_locks(),
         )?;
     }
 
@@ -322,7 +323,12 @@ fn link_archive_file_manifest_entries(
     archive_files: &Path,
     archive_file_manifest: &ArchiveFileManifest,
     link_mode: LinkMode,
+    copy_locks: &CopyLocks,
 ) -> Result<(), Error> {
+    let options = LinkOptions::new(link_mode)
+        .with_copy_locks(copy_locks)
+        .with_on_existing_directory(OnExistingDirectory::Merge);
+
     for entry in archive_file_manifest.files() {
         if !is_relative_path(entry.path()) || !is_relative_path(entry.object()) {
             return Err(Error::InvalidWheel(format!(
@@ -337,92 +343,10 @@ fn link_archive_file_manifest_entries(
             fs::create_dir_all(parent)?;
         }
 
-        match fs::remove_file(&target) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-
-        link_archive_file(&source, &target, link_mode)?;
+        link_file(&source, &target, &options)?;
     }
 
     Ok(())
-}
-
-/// Link a shared archive-file object into the install tree.
-fn link_archive_file(source: &Path, target: &Path, link_mode: LinkMode) -> Result<(), Error> {
-    match link_mode {
-        LinkMode::Clone => clone_archive_file(source, target),
-        LinkMode::Hardlink => hardlink_archive_file(source, target),
-        LinkMode::Copy => {
-            fs::copy(source, target)?;
-            Ok(())
-        }
-        LinkMode::Symlink => symlink_archive_file(source, target),
-    }
-}
-
-/// Clone a shared archive-file object, falling back to copy if cloning is unavailable.
-fn clone_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
-    if let Err(err) = reflink_copy::reflink(source, target) {
-        debug!(
-            "Failed to clone archive file from {} to {}: {err}; falling back to copy",
-            source.display(),
-            target.display()
-        );
-        fs::copy(source, target)?;
-        return Ok(());
-    }
-
-    let permissions = fs::metadata(source)?.permissions();
-    fs::set_permissions(target, permissions)?;
-    Ok(())
-}
-
-/// Hardlink a shared archive-file object, falling back to copy if hardlinking is unavailable.
-fn hardlink_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
-    if let Err(err) = fs::hard_link(source, target) {
-        debug!(
-            "Failed to hardlink archive file from {} to {}: {err}; falling back to copy",
-            source.display(),
-            target.display()
-        );
-        fs::copy(source, target)?;
-    }
-    Ok(())
-}
-
-/// Symlink a shared archive-file object, falling back to copy if symlinking is unavailable.
-fn symlink_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
-    if let Err(err) = create_file_symlink(source, target) {
-        debug!(
-            "Failed to symlink archive file from {} to {}: {err}; falling back to copy",
-            source.display(),
-            target.display()
-        );
-        fs::copy(source, target)?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(source, target)
-}
-
-#[cfg(windows)]
-fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(source, target)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-    let _ = source;
-    let _ = target;
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "file symlinks are not supported on this platform",
-    ))
 }
 
 /// Return whether a path can be joined below a trusted root.
