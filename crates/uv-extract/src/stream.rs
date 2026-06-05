@@ -13,7 +13,7 @@ use uv_distribution_filename::SourceDistExtension;
 use uv_warnings::warn_user_once;
 
 use crate::dirhash::{
-    DirectoryDigest, DirectoryDigestFile, directory_digest, empty_directory_paths,
+    DirectoryDigest, ExtractedFile, directory_digest_from_extracted, empty_directory_paths,
 };
 use crate::{CompressionMethod, Error, insecure_no_validate, validate_archive_member_name};
 
@@ -81,7 +81,7 @@ pub async fn unzip<D: Display, R: tokio::io::AsyncRead + Unpin>(
     target: impl AsRef<Path>,
 ) -> Result<Vec<(PathBuf, u64)>, Error> {
     let (files, _digest) = Box::pin(unzip_and_hash(source_hint, reader, target)).await?;
-    Ok(files)
+    Ok(files.into_iter().map(ExtractedFile::into_record).collect())
 }
 
 /// Unpack a `.zip` archive into the target directory while computing a digest of the extracted
@@ -96,7 +96,7 @@ pub async fn unzip_and_hash<D: Display, R: tokio::io::AsyncRead + Unpin>(
     source_hint: D,
     reader: R,
     target: impl AsRef<Path>,
-) -> Result<(Vec<(PathBuf, u64)>, DirectoryDigest), Error> {
+) -> Result<(Vec<ExtractedFile>, DirectoryDigest), Error> {
     // Determine whether ZIP validation is disabled.
     let skip_validation = insecure_no_validate();
 
@@ -106,8 +106,7 @@ pub async fn unzip_and_hash<D: Display, R: tokio::io::AsyncRead + Unpin>(
 
     let mut directories = FxHashSet::default();
     let mut local_headers = FxHashMap::default();
-    let mut files = Vec::new();
-    let mut hash_files = Vec::new();
+    let mut extracted_files = Vec::new();
     let mut digest_directories = FxHashSet::default();
     let mut offset = 0;
 
@@ -320,9 +319,6 @@ pub async fn unzip_and_hash<D: Display, R: tokio::io::AsyncRead + Unpin>(
                 }
             }
 
-            // Collect file paths (excluding directories).
-            files.push((relpath.clone(), actual_uncompressed_size));
-
             ComputedEntry {
                 crc32: actual_crc32,
                 uncompressed_size: actual_uncompressed_size,
@@ -501,8 +497,8 @@ pub async fn unzip_and_hash<D: Display, R: tokio::io::AsyncRead + Unpin>(
                             let executable = entry
                                 .unix_permissions()
                                 .is_some_and(|mode| mode & 0o111 != 0);
-                            hash_files.push(DirectoryDigestFile::new(
-                                &relpath,
+                            extracted_files.push(ExtractedFile::new(
+                                relpath.clone(),
                                 local_header.uncompressed_size,
                                 executable,
                                 digest,
@@ -646,10 +642,11 @@ pub async fn unzip_and_hash<D: Display, R: tokio::io::AsyncRead + Unpin>(
 
     let hash_directories = empty_directory_paths(
         digest_directories.iter().map(PathBuf::as_path),
-        files.iter().map(|(path, _)| path.as_path()),
+        extracted_files.iter().map(ExtractedFile::path),
     );
+    let digest = directory_digest_from_extracted(&extracted_files, hash_directories);
 
-    Ok((files, directory_digest(hash_files, hash_directories)))
+    Ok((extracted_files, digest))
 }
 
 /// Unpack the given tar archive into the destination directory.

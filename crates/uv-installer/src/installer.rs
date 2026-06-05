@@ -1,4 +1,5 @@
 use std::convert;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Error, Result};
@@ -6,7 +7,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::sync::oneshot;
 use tracing::{instrument, warn};
 
-use uv_cache::Cache;
+use uv_cache::{Cache, CacheBucket};
 use uv_configuration::initialize_rayon_once;
 use uv_distribution_types::CachedDist;
 use uv_install_wheel::{Layout, LinkMode};
@@ -107,6 +108,8 @@ impl<'a> Installer<'a> {
 
         let layout = venv.interpreter().layout();
         let relocatable = venv.relocatable();
+        let archive_metadata = cache.map(|cache| cache.bucket(CacheBucket::ArchiveMetadata));
+        let archive_files = cache.map(|cache| cache.bucket(CacheBucket::ArchiveFiles));
         // Initialize the threadpool with the user settings.
         initialize_rayon_once();
         rayon::spawn(move || {
@@ -115,6 +118,8 @@ impl<'a> Installer<'a> {
                 &layout,
                 installer_name.as_deref(),
                 link_mode,
+                archive_metadata,
+                archive_files,
                 reporter.as_ref(),
                 relocatable,
                 installer_metadata,
@@ -146,6 +151,10 @@ impl<'a> Installer<'a> {
             &self.venv.interpreter().layout(),
             self.name.as_deref(),
             self.link_mode,
+            self.cache
+                .map(|cache| cache.bucket(CacheBucket::ArchiveMetadata)),
+            self.cache
+                .map(|cache| cache.bucket(CacheBucket::ArchiveFiles)),
             self.reporter.as_ref(),
             self.venv.relocatable(),
             self.metadata,
@@ -161,6 +170,8 @@ fn install(
     layout: &Layout,
     installer_name: Option<&str>,
     link_mode: LinkMode,
+    archive_metadata: Option<PathBuf>,
+    archive_files: Option<PathBuf>,
     reporter: Option<&Arc<dyn Reporter>>,
     relocatable: bool,
     installer_metadata: bool,
@@ -187,6 +198,8 @@ fn install(
             wheel.build_info(),
             installer_name,
             installer_metadata,
+            archive_metadata.as_deref(),
+            archive_files.as_deref(),
             link_mode,
             &state,
         )

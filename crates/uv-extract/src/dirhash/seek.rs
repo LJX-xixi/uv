@@ -17,7 +17,9 @@ use tracing::warn;
 use uv_configuration::initialize_rayon_once;
 use uv_warnings::warn_user_once;
 
-use super::{DirectoryDigest, DirectoryDigestFile, directory_digest, empty_directory_paths};
+use super::{
+    DirectoryDigest, ExtractedFile, directory_digest_from_extracted, empty_directory_paths,
+};
 
 const LOCAL_FILE_HEADER_LENGTH: u64 = 30;
 const LOCAL_FILE_HEADER_LENGTH_USIZE: usize = 30;
@@ -35,10 +37,7 @@ static HASH_THREAD_POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
 
 /// A successfully extracted file, or an explicit directory that can affect the digest.
 enum ExtractedEntry {
-    File {
-        file: (PathBuf, u64),
-        hash_file: DirectoryDigestFile,
-    },
+    File(ExtractedFile),
     Directory(PathBuf),
 }
 
@@ -49,7 +48,7 @@ enum ExtractedEntry {
 pub(crate) fn unzip_and_hash(
     reader: fs_err::File,
     target: &Path,
-) -> Result<(Vec<(PathBuf, u64)>, DirectoryDigest), Error> {
+) -> Result<(Vec<ExtractedFile>, DirectoryDigest), Error> {
     let (reader, filename) = reader.into_parts();
 
     // Parse the central directory once, then clone the archive reader per Rayon worker so
@@ -81,13 +80,11 @@ pub(crate) fn unzip_and_hash(
         .collect::<Result<Vec<_>, Error>>()?;
 
     let mut files = Vec::with_capacity(extracted.len());
-    let mut hash_files = Vec::with_capacity(extracted.len());
     let mut digest_directories = FxHashSet::default();
     for extracted in extracted {
         match extracted {
-            ExtractedEntry::File { file, hash_file } => {
+            ExtractedEntry::File(file) => {
                 files.push(file);
-                hash_files.push(hash_file);
             }
             ExtractedEntry::Directory(path) => {
                 digest_directories.insert(path);
@@ -96,10 +93,11 @@ pub(crate) fn unzip_and_hash(
     }
     let hash_directories = empty_directory_paths(
         digest_directories.iter().map(PathBuf::as_path),
-        files.iter().map(|(path, _)| path.as_path()),
+        files.iter().map(ExtractedFile::path),
     );
+    let digest = directory_digest_from_extracted(&files, hash_directories);
 
-    Ok((files, directory_digest(hash_files, hash_directories)))
+    Ok((files, digest))
 }
 
 /// Reject entries that would write to the same sanitized output path.
@@ -276,11 +274,12 @@ where
     )?;
     preserve_executable_bit(path, unix_permissions)?;
 
-    let hash_file = DirectoryDigestFile::new(&enclosed_name, size, executable, digest);
-    Ok(ExtractedEntry::File {
-        file: (enclosed_name, size),
-        hash_file,
-    })
+    Ok(ExtractedEntry::File(ExtractedFile::new(
+        enclosed_name,
+        size,
+        executable,
+        digest,
+    )))
 }
 
 /// Build a buffered writer sized for the expected entry contents.

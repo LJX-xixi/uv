@@ -1,6 +1,6 @@
 //! Versioned directory hashes for extracted archives.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use rustc_hash::FxHashSet;
 
@@ -53,6 +53,7 @@ pub(crate) struct DirectoryDigestFile {
 }
 
 impl DirectoryDigestFile {
+    #[cfg(test)]
     pub(crate) fn new(path: &Path, size: u64, executable: bool, digest: blake3::Hash) -> Self {
         Self {
             path: canonical_path(path),
@@ -61,6 +62,74 @@ impl DirectoryDigestFile {
             digest,
         }
     }
+
+    fn from_extracted(file: &ExtractedFile) -> Self {
+        Self {
+            path: canonical_path(&file.path),
+            size: file.size,
+            executable: file.executable,
+            digest: file.digest,
+        }
+    }
+}
+
+/// A file extracted from an archive, along with the metadata used by the directory digest.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExtractedFile {
+    path: PathBuf,
+    size: u64,
+    executable: bool,
+    digest: blake3::Hash,
+}
+
+impl ExtractedFile {
+    pub(crate) fn new(path: PathBuf, size: u64, executable: bool, digest: blake3::Hash) -> Self {
+        Self {
+            path,
+            size,
+            executable,
+            digest,
+        }
+    }
+
+    /// Return the path of the extracted file within the archive.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Return whether the extracted file should be executable.
+    pub fn executable(&self) -> bool {
+        self.executable
+    }
+
+    /// Return the hex-encoded content digest of the extracted file.
+    pub fn digest_hex(&self) -> String {
+        self.digest.to_hex().to_string()
+    }
+
+    /// Convert the extracted file into a `(path, size)` pair.
+    pub fn into_record(self) -> (PathBuf, u64) {
+        (self.path, self.size)
+    }
+
+    /// Return the extracted file as a `(path, size)` pair.
+    pub fn to_record(&self) -> (PathBuf, u64) {
+        (self.path.clone(), self.size)
+    }
+}
+
+/// Compute a deterministic digest for extracted files and empty-directory paths.
+pub(crate) fn directory_digest_from_extracted(
+    files: &[ExtractedFile],
+    directories: Vec<String>,
+) -> DirectoryDigest {
+    directory_digest(
+        files
+            .iter()
+            .map(DirectoryDigestFile::from_extracted)
+            .collect(),
+        directories,
+    )
 }
 
 /// Return the canonical paths of explicit archive directories that are empty in the extracted tree.

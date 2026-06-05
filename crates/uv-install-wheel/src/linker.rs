@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -15,6 +15,7 @@ use uv_fs::link::{CopyLocks, LinkOptions, OnExistingDirectory, link_dir};
 use uv_preview::{Preview, PreviewFeature};
 use uv_warnings::warn_user;
 
+use crate::ArchiveFileManifest;
 use crate::Error;
 
 pub use uv_fs::link::LinkMode;
@@ -253,11 +254,14 @@ pub(crate) fn link_wheel_files(
     link_mode: LinkMode,
     site_packages: impl AsRef<Path>,
     wheel: impl AsRef<Path>,
+    archive_metadata: Option<&Path>,
+    archive_files: Option<&Path>,
     state: &InstallState,
     filename: &WheelFilename,
 ) -> Result<(), Error> {
     let wheel = wheel.as_ref();
     let site_packages = site_packages.as_ref();
+    let archive_file_manifest = read_archive_file_manifest(wheel, archive_metadata)?;
     register_installed_paths(wheel, state, filename)?;
 
     // The `RECORD` file is modified during installation, so it needs a real
@@ -267,6 +271,17 @@ pub(crate) fn link_wheel_files(
         .with_copy_locks(state.copy_locks())
         .with_on_existing_directory(OnExistingDirectory::Merge);
     let used_link_mode = link_dir(wheel, site_packages, &options)?;
+
+    if let (Some(archive_file_manifest), Some(archive_files)) =
+        (archive_file_manifest.as_ref(), archive_files)
+    {
+        link_archive_file_manifest_entries(
+            site_packages,
+            archive_files,
+            archive_file_manifest,
+            archive_file_link_mode(link_mode),
+        )?;
+    }
 
     if used_link_mode == LinkMode::Clone {
         // The directory mtime is not updated when cloning and the mtime is
@@ -279,6 +294,132 @@ pub(crate) fn link_wheel_files(
     }
 
     Ok(())
+}
+
+/// Read the archive-file manifest for a cached archive directory.
+fn read_archive_file_manifest(
+    wheel: &Path,
+    archive_metadata: Option<&Path>,
+) -> Result<Option<ArchiveFileManifest>, Error> {
+    let Some(archive_metadata) = archive_metadata else {
+        return Ok(None);
+    };
+    let Some(archive_id) = wheel.file_name() else {
+        return Ok(None);
+    };
+
+    Ok(ArchiveFileManifest::read_from_metadata(
+        &archive_metadata.join(archive_id),
+    )?)
+}
+
+/// Return the link mode to use for shared archive-file objects.
+fn archive_file_link_mode(link_mode: LinkMode) -> LinkMode {
+    match link_mode {
+        // The default link mode is clone on macOS and Linux, but shared archive-file objects need
+        // to keep hardlink sharing with installed payloads to provide the intended cache benefit.
+        LinkMode::Clone => LinkMode::Hardlink,
+        mode => mode,
+    }
+}
+
+/// Replace installed payloads with links to their shared archive-file objects.
+fn link_archive_file_manifest_entries(
+    site_packages: &Path,
+    archive_files: &Path,
+    archive_file_manifest: &ArchiveFileManifest,
+    link_mode: LinkMode,
+) -> Result<(), Error> {
+    for entry in archive_file_manifest.files() {
+        if !is_relative_path(entry.path()) || !is_relative_path(entry.object()) {
+            return Err(Error::InvalidWheel(format!(
+                "archive-file manifest contains an unsafe path: {}",
+                entry.path().display()
+            )));
+        }
+
+        let source = archive_files.join(entry.object());
+        let target = site_packages.join(entry.path());
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        match fs::remove_file(&target) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        link_archive_file(&source, &target, link_mode)?;
+    }
+
+    Ok(())
+}
+
+/// Link a shared archive-file object into the install tree.
+fn link_archive_file(source: &Path, target: &Path, link_mode: LinkMode) -> Result<(), Error> {
+    match link_mode {
+        LinkMode::Clone | LinkMode::Hardlink => hardlink_archive_file(source, target),
+        LinkMode::Copy => {
+            fs::copy(source, target)?;
+            Ok(())
+        }
+        LinkMode::Symlink => symlink_archive_file(source, target),
+    }
+}
+
+/// Hardlink a shared archive-file object, falling back to copy if hardlinking is unavailable.
+fn hardlink_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
+    if let Err(err) = fs::hard_link(source, target) {
+        debug!(
+            "Failed to hardlink archive file from {} to {}: {err}; falling back to copy",
+            source.display(),
+            target.display()
+        );
+        fs::copy(source, target)?;
+    }
+    Ok(())
+}
+
+/// Symlink a shared archive-file object, falling back to copy if symlinking is unavailable.
+fn symlink_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
+    if let Err(err) = create_file_symlink(source, target) {
+        debug!(
+            "Failed to symlink archive file from {} to {}: {err}; falling back to copy",
+            source.display(),
+            target.display()
+        );
+        fs::copy(source, target)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, target)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    let _ = source;
+    let _ = target;
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "file symlinks are not supported on this platform",
+    ))
+}
+
+/// Return whether a path can be joined below a trusted root.
+fn is_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 /// Update the mtime of the site-packages directory to the current time.

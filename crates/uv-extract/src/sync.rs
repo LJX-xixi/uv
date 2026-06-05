@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use crate::Error;
-use crate::dirhash::DirectoryDigest;
+use crate::dirhash::{DirectoryDigest, ExtractedFile};
 
 /// Unzip a `.zip` archive into the target directory.
 ///
 /// Returns the list of unpacked files and their sizes.
 pub fn unzip(reader: fs_err::File, target: &Path) -> Result<Vec<(PathBuf, u64)>, Error> {
     let (files, _digest) = unzip_and_hash(reader, target)?;
-    Ok(files)
+    Ok(files.into_iter().map(ExtractedFile::into_record).collect())
 }
 
 /// Unzip a `.zip` archive into the target directory while computing a digest of the extracted files.
@@ -21,7 +21,7 @@ pub fn unzip(reader: fs_err::File, target: &Path) -> Result<Vec<(PathBuf, u64)>,
 pub fn unzip_and_hash(
     reader: fs_err::File,
     target: &Path,
-) -> Result<(Vec<(PathBuf, u64)>, DirectoryDigest), Error> {
+) -> Result<(Vec<ExtractedFile>, DirectoryDigest), Error> {
     crate::dirhash::unzip_and_hash(reader, target)
 }
 

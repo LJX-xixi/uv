@@ -204,6 +204,8 @@ fn install_wheel_many_files(c: &mut Criterion<WallTime>) {
                     None::<&()>,
                     Some("uv"),
                     true,
+                    None,
+                    None,
                     LinkMode::default(),
                     &state,
                 )
