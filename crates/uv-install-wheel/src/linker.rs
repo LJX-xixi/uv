@@ -251,7 +251,7 @@ impl InstallState {
 /// Extract a wheel by linking all of its files into site packages.
 #[instrument(skip_all)]
 pub(crate) fn link_wheel_files(
-    link_mode: LinkMode,
+    link_mode: Option<LinkMode>,
     site_packages: impl AsRef<Path>,
     wheel: impl AsRef<Path>,
     archive_metadata: Option<&Path>,
@@ -263,10 +263,12 @@ pub(crate) fn link_wheel_files(
     let site_packages = site_packages.as_ref();
     let archive_file_manifest = read_archive_file_manifest(wheel, archive_metadata)?;
     register_installed_paths(wheel, state, filename)?;
+    // Preserve the existing directory-linking default for ordinary wheel files.
+    let directory_link_mode = link_mode.unwrap_or_default();
 
     // The `RECORD` file is modified during installation, so it needs a real
     // copy rather than a link back to the cache.
-    let options = LinkOptions::new(link_mode)
+    let options = LinkOptions::new(directory_link_mode)
         .with_mutable_copy_filter(|p: &Path| p.ends_with("RECORD"))
         .with_copy_locks(state.copy_locks())
         .with_on_existing_directory(OnExistingDirectory::Merge);
@@ -279,7 +281,8 @@ pub(crate) fn link_wheel_files(
             site_packages,
             archive_files,
             archive_file_manifest,
-            archive_file_link_mode(link_mode),
+            // In the absence of an explicit link mode, keep shared archive-file objects linked.
+            link_mode.unwrap_or(LinkMode::Hardlink),
         )?;
     }
 
@@ -311,16 +314,6 @@ fn read_archive_file_manifest(
     Ok(ArchiveFileManifest::read_from_metadata(
         &archive_metadata.join(archive_id),
     )?)
-}
-
-/// Return the link mode to use for shared archive-file objects.
-fn archive_file_link_mode(link_mode: LinkMode) -> LinkMode {
-    match link_mode {
-        // The default link mode is clone on macOS and Linux, but shared archive-file objects need
-        // to keep hardlink sharing with installed payloads to provide the intended cache benefit.
-        LinkMode::Clone => LinkMode::Hardlink,
-        mode => mode,
-    }
 }
 
 /// Replace installed payloads with links to their shared archive-file objects.
@@ -359,13 +352,31 @@ fn link_archive_file_manifest_entries(
 /// Link a shared archive-file object into the install tree.
 fn link_archive_file(source: &Path, target: &Path, link_mode: LinkMode) -> Result<(), Error> {
     match link_mode {
-        LinkMode::Clone | LinkMode::Hardlink => hardlink_archive_file(source, target),
+        LinkMode::Clone => clone_archive_file(source, target),
+        LinkMode::Hardlink => hardlink_archive_file(source, target),
         LinkMode::Copy => {
             fs::copy(source, target)?;
             Ok(())
         }
         LinkMode::Symlink => symlink_archive_file(source, target),
     }
+}
+
+/// Clone a shared archive-file object, falling back to copy if cloning is unavailable.
+fn clone_archive_file(source: &Path, target: &Path) -> Result<(), Error> {
+    if let Err(err) = reflink_copy::reflink(source, target) {
+        debug!(
+            "Failed to clone archive file from {} to {}: {err}; falling back to copy",
+            source.display(),
+            target.display()
+        );
+        fs::copy(source, target)?;
+        return Ok(());
+    }
+
+    let permissions = fs::metadata(source)?.permissions();
+    fs::set_permissions(target, permissions)?;
+    Ok(())
 }
 
 /// Hardlink a shared archive-file object, falling back to copy if hardlinking is unavailable.

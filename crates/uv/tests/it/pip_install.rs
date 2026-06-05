@@ -16172,7 +16172,8 @@ fn binary_payloads_use_archive_file_store() -> Result<()> {
     let context = uv_test::test_context!("3.12");
     let wheel = binary_payload_wheel(&context)?;
 
-    uv_snapshot!(context.filters(), context.pip_install().arg(&wheel), @"
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg(&wheel), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -16256,6 +16257,30 @@ fn binary_payloads_use_archive_file_store() -> Result<()> {
     #[cfg(any(unix, windows))]
     assert_different_file(
         &copy_target.path().join("binary_payload").join("native.so"),
+        archive_file,
+    )?;
+
+    let clone_target = context.temp_dir.child("clone-target");
+    uv_snapshot!(context.filters(), context.pip_install()
+        .arg("--target")
+        .arg(clone_target.path())
+        .arg("--link-mode")
+        .arg("clone")
+        .arg(&wheel), @"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Using CPython 3.12.[X] interpreter at: .venv/bin/python3
+    Resolved 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + binary-payload==0.1.0 (from file://[TEMP_DIR]/binary_payload-0.1.0-py3-none-any.whl)
+    ");
+
+    #[cfg(any(unix, windows))]
+    assert_different_file(
+        &clone_target.path().join("binary_payload").join("native.so"),
         archive_file,
     )?;
 

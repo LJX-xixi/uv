@@ -507,7 +507,7 @@ async fn build_package(
     wheel: bool,
     list: bool,
     dependency_metadata: &DependencyMetadata,
-    link_mode: LinkMode,
+    link_mode: Option<LinkMode>,
     config_setting: &ConfigSettings,
     config_settings_package: &PackageConfigSettings,
     preview: Preview,

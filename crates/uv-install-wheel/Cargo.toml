@@ -39,6 +39,7 @@ mailparse = { workspace = true }
 owo-colors = { workspace = true }
 pathdiff = { workspace = true }
 regex = { workspace = true }
+reflink-copy = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -206,7 +206,7 @@ fn install_wheel_many_files(c: &mut Criterion<WallTime>) {
                     true,
                     None,
                     None,
-                    LinkMode::default(),
+                    Some(LinkMode::default()),
                     &state,
                 )
                 .expect("Failed to install wheel");
@@ -501,7 +501,7 @@ mod resolver {
             build_isolation,
             &extra_build_requires,
             &extra_build_variables,
-            LinkMode::default(),
+            Some(LinkMode::default()),
             &build_options,
             &hashes,
             exclude_newer,

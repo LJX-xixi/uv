@@ -38,7 +38,7 @@ pub fn install_wheel<Cache: serde::Serialize, Build: serde::Serialize>(
     installer_metadata: bool,
     archive_metadata: Option<&Path>,
     archive_files: Option<&Path>,
-    link_mode: LinkMode,
+    link_mode: Option<LinkMode>,
     state: &InstallState,
 ) -> Result<(), Error> {
     let dist_info_prefix = find_dist_info(&wheel)?;
