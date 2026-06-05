@@ -1381,15 +1381,39 @@ fn persist_archive_file(src: &Path, dst: &Path, executable: bool) -> io::Result<
     };
     fs_err::create_dir_all(parent)?;
 
+    if dst.try_exists()? {
+        normalize_archive_file_permissions(dst, executable)?;
+        return replace_archive_file_link(src, dst);
+    }
+
     match fs_err::hard_link(src, dst) {
         Ok(()) => normalize_archive_file_permissions(dst, executable),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             normalize_archive_file_permissions(dst, executable)?;
-            fs_err::remove_file(src)?;
-            fs_err::hard_link(dst, src)
+            replace_archive_file_link(src, dst)
         }
         Err(err) => Err(err),
     }
+}
+
+fn replace_archive_file_link(src: &Path, dst: &Path) -> io::Result<()> {
+    let Some(parent) = dst.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "archive file path must have a parent directory",
+        ));
+    };
+    let Some(file_name) = src.file_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "archive source path must have a file name",
+        ));
+    };
+
+    let temp_dir = tempfile::tempdir_in(parent)?;
+    let temp_file = temp_dir.path().join(file_name);
+    fs_err::hard_link(dst, &temp_file)?;
+    fs_err::rename(temp_file, src)
 }
 
 #[cfg(unix)]
@@ -1646,6 +1670,24 @@ fn add_tar_zst_extension(mut url: DisplaySafeUrl) -> DisplaySafeUrl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persist_archive_file_relinks_missing_source() -> io::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let archive_dir = temp_dir.path().join("archive/package");
+        let archive_files_dir = temp_dir.path().join("archive-files");
+        fs_err::create_dir_all(&archive_dir)?;
+        fs_err::create_dir_all(&archive_files_dir)?;
+        let src = archive_dir.join("native.so");
+        let dst = archive_files_dir.join("native.so");
+        fs_err::write(&dst, "binary contents")?;
+
+        persist_archive_file(&src, &dst, false)?;
+
+        assert_eq!(fs_err::read(&src)?, b"binary contents");
+        assert_eq!(uv_fs::is_same_file_allow_missing(&src, &dst), Some(true));
+        Ok(())
+    }
 
     #[test]
     fn test_add_tar_zst_extension() {
