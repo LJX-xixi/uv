@@ -67,7 +67,7 @@ impl ArchiveFileManifest {
         fs_err::create_dir_all(metadata)?;
         let contents = serde_json::to_vec_pretty(self)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        fs_err::write(path, contents)
+        uv_fs::write_atomic_sync(path, contents)
     }
 }
 
